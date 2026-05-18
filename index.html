@@ -778,7 +778,7 @@ tr:hover td{background:var(--gray-50)}
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">Razão Social / Nome</label>
-        <input class="form-input" id="mcClient" placeholder="ex: Moldimig Macharia Ltda" list="clientSuggestions" oninput="suggestClient(this.value);checkMachineDuplicateCandidate();handleMachineClientInput()">
+        <input class="form-input" id="mcClient" placeholder="ex: Moldimig Macharia Ltda" list="clientSuggestions" oninput="suggestClient(this.value);checkMachineDuplicateCandidate()">
         <datalist id="clientSuggestions"></datalist>
       </div>
       <div class="form-group">
@@ -2795,6 +2795,7 @@ async function syncFullModelCatalogToGS(modelId){
   try{
     await syncToGS('saveModel',{model:{...model}});
     const parts=getAllModelPartsForSync(model);
+    const activePartIds=parts.map(p=>p.id).filter(Boolean);
     for(const p of parts){
       await syncToGS('savePartMaster',{part:p});
     }
@@ -2802,6 +2803,7 @@ async function syncFullModelCatalogToGS(modelId){
       const sims=(p.similarities||[]).map(s=>typeof s==='string'?{ref:s,brand:'',obs:''}:s);
       await syncToGS('replacePartSimilarities',{partId:p.id,modelId:model.id,similarities:sims});
     }
+    await syncToGS('reconcileModelParts',{modelId:model.id,activePartIds,deletedBy:'admin'});
   }catch(err){
     console.warn('syncFullModelCatalogToGS falhou:', err);
     toast('Salvo localmente. Falha ao sincronizar catálogo.','error');
@@ -2895,6 +2897,7 @@ function deleteSub(modelId,subId){
   m.subsystems=m.subsystems.filter(s=>s.id!==subId);
   save(); renderCatalog(); switchTab('subs');
   toast('Subsistema excluído');
+  syncToGS('deleteSubsystemParts',{modelId,subId,deletedBy:'admin'});
 }
 
 // ── PART MODAL ──
@@ -3089,6 +3092,7 @@ function deletePart(modelId,type,subId,partId){
   else{const s=m.subsystems.find(s=>s.id===subId);s.parts=s.parts.filter(p=>p.id!==partId)}
   save(); renderCatalog();
   toast('Peça excluída');
+  syncToGS('deletePartMaster',{partId,modelId,deletedBy:'admin'});
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3152,73 +3156,6 @@ function suggestClient(val){
   const dl=document.getElementById('clientSuggestions');
   const matches=[...new Set([...PGP_CLIENTS,...db.machines.map(m=>m.client)])].filter(c=>c.toLowerCase().includes(val.toLowerCase())).slice(0,8);
   dl.innerHTML=matches.map(c=>`<option value="${c}">`).join('');
-}
-
-function _isIsoDate(v){
-  return /^\d{4}-\d{2}-\d{2}$/.test((v||'').trim());
-}
-
-// ── Preenche campos do cliente no modal de máquina a partir de db.clients ──
-function applyClientToMachineForm(clienteObj){
-  if(!clienteObj) return;
-  const fieldMap=[
-    ['mcBranch',clienteObj.filial||''],
-    ['mcCnpj',clienteObj.cnpj||''],
-    ['mcContact',clienteObj.contato||''],
-    ['mcPhone',clienteObj.telefone||''],
-    ['mcEmail',clienteObj.email||''],
-    ['mcCity',clienteObj.cidade||''],
-    ['mcDriveLink',clienteObj.drive_url||''],
-    ['mcLastVisit',_isIsoDate(clienteObj.lastVisit)?clienteObj.lastVisit:''],
-    ['mcNextVisit',_isIsoDate(clienteObj.nextVisit)?clienteObj.nextVisit:''],
-  ];
-  let filled=0;
-  fieldMap.forEach(([fieldId,value])=>{
-    const el=document.getElementById(fieldId);
-    if(!el) return;
-    if(!el.value.trim() && value){
-      el.value=value;
-      filled++;
-    }
-  });
-  if(filled>0) toast('Dados do cliente carregados do cadastro.','success');
-}
-
-// ── Dispara busca de cliente ao digitar/selecionar no campo mcClient ────
-function handleMachineClientInput(){
-  if(editMachineId) return;
-  const val=(document.getElementById('mcClient')?.value||'').trim();
-  if(!val || val.length<3) return;
-  const normVal=normalizeEntityName(val);
-  if(!normVal) return;
-  const cliente=(db.clients||[]).find(c=>normalizeEntityName(c.nome)===normVal);
-  if(cliente) applyClientToMachineForm(cliente);
-}
-
-// ── Abre modal de nova máquina já com cliente pré-selecionado ───────────
-function openModalMachineForClient(clientId){
-  const cliente=(db.clients||[]).find(c=>c.id===clientId);
-  if(!cliente){ toast('Cliente não encontrado','error'); return; }
-  openModalMachine(null);
-  const mcClientEl=document.getElementById('mcClient');
-  if(mcClientEl) mcClientEl.value=cliente.nome;
-  const fieldMap=[
-    ['mcBranch',cliente.filial||''],
-    ['mcCnpj',cliente.cnpj||''],
-    ['mcContact',cliente.contato||''],
-    ['mcPhone',cliente.telefone||''],
-    ['mcEmail',cliente.email||''],
-    ['mcCity',cliente.cidade||''],
-    ['mcDriveLink',cliente.drive_url||''],
-    ['mcLastVisit',_isIsoDate(cliente.lastVisit)?cliente.lastVisit:''],
-    ['mcNextVisit',_isIsoDate(cliente.nextVisit)?cliente.nextVisit:''],
-  ];
-  fieldMap.forEach(([fieldId,value])=>{
-    const el=document.getElementById(fieldId);
-    if(el && value) el.value=value;
-  });
-  suggestClient(cliente.nome);
-  _captureFormSnapshot('modalMachine');
 }
 
 function openModalMachine(id=null){
@@ -4327,7 +4264,6 @@ function renderClients(){
             </td>
             <td>
               <div class="row-actions">
-                <button class="btn btn-secondary btn-xs" onclick="openModalMachineForClient('${c.id}')" title="Cadastrar nova máquina para este cliente">+ Máquina</button>
                 <button class="btn-icon" onclick="openModalClient('${c.id}')" title="Editar cliente">✏️</button>
                 ${(String(c.tipoRegistro||'').toUpperCase()==='TESTE')
                   ? `<button class="btn btn-danger btn-xs"
