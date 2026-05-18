@@ -2804,6 +2804,15 @@ async function syncFullModelCatalogToGS(modelId){
       await syncToGS('replacePartSimilarities',{partId:p.id,modelId:model.id,similarities:sims});
     }
     await syncToGS('reconcileModelParts',{modelId:model.id,activePartIds,deletedBy:'admin'});
+    // GAS confirmou o reconcile — remove tombstones das peças deste modelo
+    // (apenas as que não fazem parte da lista ativa, ou seja, foram deletadas)
+    if(db._deletedPartIds){
+      const activeSet=new Set(activePartIds);
+      Object.keys(db._deletedPartIds).forEach(pid=>{
+        if(!activeSet.has(pid)) delete db._deletedPartIds[pid];
+      });
+      save();
+    }
   }catch(err){
     console.warn('syncFullModelCatalogToGS falhou:', err);
     toast('Salvo localmente. Falha ao sincronizar catálogo.','error');
@@ -3090,6 +3099,10 @@ function deletePart(modelId,type,subId,partId){
   const m=getModel(modelId);
   if(type==='direct') m.directParts=m.directParts.filter(p=>p.id!==partId);
   else{const s=m.subsystems.find(s=>s.id===subId);s.parts=s.parts.filter(p=>p.id!==partId)}
+  // Tombstone: registra o Part_ID como deletado localmente para que o
+  // syncCatalogFromGS não reinsira a peça antes do GAS processar o reconcile.
+  if(!db._deletedPartIds) db._deletedPartIds={};
+  db._deletedPartIds[partId]=Date.now();
   save(); renderCatalog();
   toast('Peça excluída');
   // Usa syncFullModelCatalogToGS (que inclui reconcileModelParts) em vez de apenas
@@ -4609,9 +4622,12 @@ async function syncCatalogFromGS(gsGet){
       modelById.set(String(target.id),target);
     }
 
+    const _deleted=db._deletedPartIds||{};
     const upsertPart=(arr,part)=>{ const i=arr.findIndex(x=>String(x.id)===String(part.id)); if(i>=0) arr[i]={...(arr[i]||{}),...part}; else arr.push(part); };
     for(const row of partsRows){
       if(String(row.Ativo||'').trim().toUpperCase()==='NÃO') continue;
+      // Não reinsere peças deletadas localmente que ainda aguardam confirmação do GAS
+      if(_deleted[String(row.Part_ID||'').trim()]) continue;
       const modelId=String(row.Model_ID||'').trim(); const partId=String(row.Part_ID||'').trim(); if(!modelId||!partId) continue;
       const m=(db.models||[]).find(x=>String(x.id)===modelId); if(!m) continue;
       const scope=String(row.Part_Scope||'direct').trim().toLowerCase()==='sub'?'sub':'direct';
