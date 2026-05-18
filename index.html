@@ -481,7 +481,7 @@ tr:hover td{background:var(--gray-50)}
     <div class="logo-mark">PC</div>
     <div class="logo-text">Proper Compressores</div>
     <div class="logo-sep"></div>
-    <div class="logo-sub">PCM v3.8</div>
+    <div class="logo-sub">PCM v3.9</div>
   </div>
   <nav class="header-nav">
     <button class="nav-btn active" onclick="showView('dashboard')" id="navDashboard">Dashboard</button>
@@ -3100,15 +3100,22 @@ function deletePart(modelId,type,subId,partId){
   if(type==='direct') m.directParts=m.directParts.filter(p=>p.id!==partId);
   else{const s=m.subsystems.find(s=>s.id===subId);s.parts=s.parts.filter(p=>p.id!==partId)}
   // Tombstone: registra o Part_ID como deletado localmente para que o
-  // syncCatalogFromGS não reinsira a peça antes do GAS processar o reconcile.
+  // syncCatalogFromGS não reinsira a peça antes do GAS confirmar o delete.
   if(!db._deletedPartIds) db._deletedPartIds={};
   db._deletedPartIds[partId]=Date.now();
   save(); renderCatalog();
   toast('Peça excluída');
-  // Usa syncFullModelCatalogToGS (que inclui reconcileModelParts) em vez de apenas
-  // deletePartMaster — isso garante que a peça suma do GAS mesmo se a linha já
-  // existia com Ativo=NÃO de um delete anterior que falhou parcialmente.
-  syncFullModelCatalogToGS(modelId);
+  // Estratégia de delete em 2 camadas:
+  // 1) deletePartMaster: marca Ativo=NÃO diretamente no GAS (incluindo duplicatas)
+  // 2) syncFullModelCatalogToGS: reconcilia o estado completo do modelo e limpa tombstone
+  (async()=>{
+    try{
+      await syncToGS('deletePartMaster',{partId,modelId,deletedBy:'admin'});
+    }catch(e){
+      console.warn('deletePartMaster falhou, continuando com reconcile:', e);
+    }
+    await syncFullModelCatalogToGS(modelId);
+  })();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -4622,6 +4629,15 @@ async function syncCatalogFromGS(gsGet){
       modelById.set(String(target.id),target);
     }
 
+    // Tombstones: Part_IDs deletados localmente. Expira após 10 min para não
+    // bloquear peças caso o GAS falhe permanentemente.
+    const now_ts=Date.now();
+    const TEN_MIN=10*60*1000;
+    if(db._deletedPartIds){
+      Object.keys(db._deletedPartIds).forEach(pid=>{
+        if(now_ts - (db._deletedPartIds[pid]||0) > TEN_MIN) delete db._deletedPartIds[pid];
+      });
+    }
     const _deleted=db._deletedPartIds||{};
     const upsertPart=(arr,part)=>{ const i=arr.findIndex(x=>String(x.id)===String(part.id)); if(i>=0) arr[i]={...(arr[i]||{}),...part}; else arr.push(part); };
     for(const row of partsRows){
