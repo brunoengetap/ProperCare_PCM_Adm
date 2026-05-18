@@ -481,7 +481,7 @@ tr:hover td{background:var(--gray-50)}
     <div class="logo-mark">PC</div>
     <div class="logo-text">Proper Compressores</div>
     <div class="logo-sep"></div>
-    <div class="logo-sub">PCM v3.9</div>
+    <div class="logo-sub">PCM v3.10</div>
   </div>
   <nav class="header-nav">
     <button class="nav-btn active" onclick="showView('dashboard')" id="navDashboard">Dashboard</button>
@@ -976,6 +976,20 @@ tr:hover td{background:var(--gray-50)}
   </div>
 </div>
 
+
+<!-- Modal: Apagar cliente orphan -->
+<div class="overlay" id="modalDeleteOrphan">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-title" style="color:var(--red)">🗑 Apagar cliente</div>
+    <div id="deleteOrphanBody" style="font-size:13px;color:var(--text1);line-height:1.6;margin:12px 0 4px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap">
+      <button class="btn btn-secondary" onclick="closeModal('modalDeleteOrphan')">Cancelar</button>
+      <button class="btn" style="background:var(--orange);color:#fff" id="btnDeleteOrphanOnly" onclick="_confirmDeleteOrphan(false)">Apagar só o nome</button>
+      <button class="btn btn-danger" id="btnDeleteOrphanAll" onclick="_confirmDeleteOrphan(true)">Apagar + máquinas</button>
+    </div>
+  </div>
+</div>
+
 <!-- Lightbox -->
 <div class="lightbox" id="lightbox" onclick="closeLightbox()">
   <button class="lightbox-close" onclick="closeLightbox()">×</button>
@@ -1221,7 +1235,7 @@ function _dbHash(v) {
 
 // Modais de edição que precisam de detecção de alteração não salva
 const EDITABLE_MODALS = new Set([
-  'modalModel', 'modalSub', 'modalPart', 'modalMachine', 'modalClient'
+  'modalModel', 'modalSub', 'modalPart', 'modalMachine', 'modalClient', 'modalDeleteOrphan'
 ]);
 // modalMachineParts é somente leitura — fecha direto, sem confirmação
 
@@ -1272,7 +1286,7 @@ function closeModalSafe(modalId) {
 // Limpa TODO o estado residual de modais — chamado em restore e importJSON
 function _resetModalState() {
   // Fechar todos os modais que estejam abertos
-  ['modalModel','modalSub','modalPart','modalMachine','modalMachineParts','modalClient','modalCompat']
+  ['modalModel','modalSub','modalPart','modalMachine','modalMachineParts','modalClient','modalCompat','modalDeleteOrphan']
     .forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('open');
@@ -1314,7 +1328,7 @@ function _bindModal(modalId) {
 }
 
 function initModalSystem() {
-  ['modalModel','modalSub','modalPart','modalMachine','modalMachineParts','modalClient','modalCompat']
+  ['modalModel','modalSub','modalPart','modalMachine','modalMachineParts','modalClient','modalCompat','modalDeleteOrphan']
     .forEach(_bindModal);
 }
 
@@ -4161,6 +4175,59 @@ function setClientSort(field){
   renderClients();
 }
 
+
+// ═══════════════════════════════════════════════════════════
+// DELETE ORPHAN CLIENT
+// ═══════════════════════════════════════════════════════════
+let _deleteOrphanName = '';
+
+function openDeleteOrphan(nome, nMachines) {
+  _deleteOrphanName = nome;
+  const body = document.getElementById('deleteOrphanBody');
+  const machineList = (db.machines || [])
+    .filter(m => (m.client || '').toLowerCase().trim() === nome.toLowerCase().trim())
+    .map(m => `<li style="font-size:12px">${m.brand||''} ${m.model||''} ${m.tag ? '· TAG: '+m.tag : ''} ${m.serial ? '· NS: '+m.serial : ''}</li>`)
+    .join('');
+  body.innerHTML = `
+    <p>O nome <strong>${nome}</strong> aparece em <strong>${nMachines} máquina${nMachines!==1?'s':''}</strong> mas não tem cadastro de cliente próprio.</p>
+    ${machineList ? `<ul style="margin:8px 0 8px 16px;color:var(--text2)">${machineList}</ul>` : ''}
+    <p style="margin-top:10px"><strong>Apagar só o nome:</strong> suprime da lista mas mantém as máquinas intactas (o campo "cliente" das máquinas fica em branco).<br>
+    <strong>Apagar + máquinas:</strong> remove permanentemente as máquinas vinculadas também.</p>`;
+  openModal('modalDeleteOrphan');
+}
+
+async function _confirmDeleteOrphan(withMachines) {
+  const nome = _deleteOrphanName;
+  if (!nome) return;
+  const normNome = (nome || '').toLowerCase().trim();
+
+  if (withMachines) {
+    // Remove máquinas vinculadas
+    const toDelete = (db.machines || []).filter(m => (m.client || '').toLowerCase().trim() === normNome);
+    db.machines = db.machines.filter(m => (m.client || '').toLowerCase().trim() !== normNome);
+    // Sincroniza deletes no GAS
+    for (const m of toDelete) {
+      try { await syncToGS('deleteMachine', { id: m.id, deletedBy: 'admin' }); } catch(e) { console.warn('deleteMachine falhou:', e); }
+    }
+    toast(`${toDelete.length} máquina${toDelete.length!==1?'s':''} removida${toDelete.length!==1?'s':''}`,'success');
+  } else {
+    // Só limpa o campo client nas máquinas (desvincula sem deletar)
+    (db.machines || []).forEach(m => {
+      if ((m.client || '').toLowerCase().trim() === normNome) {
+        m.client = '';
+        try { syncToGS('saveMachine', { machine: m }); } catch(e) {}
+      }
+    });
+    toast(`Cliente "${nome}" desvinculado das máquinas`,'success');
+  }
+
+  save();
+  closeModal('modalDeleteOrphan');
+  renderClients();
+  renderMachines();
+  renderSidebar();
+}
+
 function renderClients(){
   const el=document.getElementById('clientsBody');
   if(!db.clients) db.clients=[];
@@ -4318,7 +4385,10 @@ function renderClients(){
         <tbody>${unregistered.sort((a,b)=>a.nome.localeCompare(b.nome)).map(u=>`<tr>
           <td><div style="font-weight:600">${u.nome}</div></td>
           <td style="font-size:11px;color:var(--text2)">${u.eqs.map(e=>e.tag||e.model).join(', ')}</td>
-          <td><button class="btn btn-secondary btn-xs" onclick="openModalClientPrefill('${u.nome.replace(/'/g,"\\'")}')">Cadastrar →</button></td>
+          <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
+            <button class="btn btn-secondary btn-xs" onclick="openModalClientPrefill('${u.nome.replace(/'/g,"\\'")}')">Cadastrar →</button>
+            <button class="btn btn-xs" style="background:var(--red);color:#fff;border:none" onclick="openDeleteOrphan('${u.nome.replace(/'/g,"\\'")}',${u.eqs.length})" title="Apagar permanentemente">🗑</button>
+          </td>
         </tr>`).join('')}</tbody>
       </table></div>
     </div>`:''}
