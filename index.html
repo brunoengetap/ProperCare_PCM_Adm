@@ -3092,7 +3092,10 @@ function deletePart(modelId,type,subId,partId){
   else{const s=m.subsystems.find(s=>s.id===subId);s.parts=s.parts.filter(p=>p.id!==partId)}
   save(); renderCatalog();
   toast('Peça excluída');
-  syncToGS('deletePartMaster',{partId,modelId,deletedBy:'admin'});
+  // Usa syncFullModelCatalogToGS (que inclui reconcileModelParts) em vez de apenas
+  // deletePartMaster — isso garante que a peça suma do GAS mesmo se a linha já
+  // existia com Ativo=NÃO de um delete anterior que falhou parcialmente.
+  syncFullModelCatalogToGS(modelId);
 }
 
 // ═══════════════════════════════════════════════════════════
