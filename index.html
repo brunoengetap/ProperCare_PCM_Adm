@@ -481,7 +481,7 @@ tr:hover td{background:var(--gray-50)}
     <div class="logo-mark">PC</div>
     <div class="logo-text">Proper Compressores</div>
     <div class="logo-sep"></div>
-    <div class="logo-sub">PCM v3.11</div>
+    <div class="logo-sub">PCM v3.12</div>
   </div>
   <nav class="header-nav">
     <button class="nav-btn active" onclick="showView('dashboard')" id="navDashboard">Dashboard</button>
@@ -3229,6 +3229,19 @@ function suggestClient(val){
   const dl=document.getElementById('clientSuggestions');
   const matches=[...new Set([...PGP_CLIENTS,...db.machines.map(m=>m.client)])].filter(c=>c.toLowerCase().includes(val.toLowerCase())).slice(0,8);
   dl.innerHTML=matches.map(c=>`<option value="${c}">`).join('');
+  // Auto-preenchimento: se o valor digitado bate exatamente com um cliente cadastrado, preenche os campos
+  if(!editMachineId){
+    const hit=db.clients?db.clients.find(c=>normalizeEntityName(c.nome)===normalizeEntityName(val)):null;
+    if(hit){
+      const map={mcBranch:'branch',mcCnpj:'cnpj',mcContact:'contact',mcPhone:'phone',mcEmail:'email',mcCity:'city',mcDriveLink:'driveLink'};
+      Object.entries(map).forEach(([elId,prop])=>{
+        const el=document.getElementById(elId);
+        if(el&&!el.value.trim()&&hit[prop])el.value=hit[prop];
+      });
+      if(hit.lastVisit){const lv=document.getElementById('mcLastVisit');if(lv&&!lv.value)lv.value=hit.lastVisit;}
+      if(hit.nextVisit){const nv=document.getElementById('mcNextVisit');if(nv&&!nv.value)nv.value=hit.nextVisit;}
+    }
+  }
 }
 
 function openModalMachine(id=null){
@@ -3241,6 +3254,18 @@ function openModalMachine(id=null){
     const eq=db.machines.find(m=>m.id===id);
     const map={mcClient:'client',mcBranch:'branch',mcCnpj:'cnpj',mcContact:'contact',mcPhone:'phone',mcEmail:'email',mcCity:'city',mcBrand:'brand',mcModel:'model',mcSerial:'serial',mcTag:'tag',mcLocation:'location',mcPower:'power',mcObs:'obs',mcDriveLink:'driveLink'};
     Object.entries(map).forEach(([k,v])=>{const el=document.getElementById(k);if(el)el.value=eq[v]||''});
+    // Se o nome do cliente gravado não é o canônico, corrigir exibição e preencher dados do cliente
+    if(db.clients){
+      const hitC=db.clients.find(c=>normalizeEntityName(c.nome)===normalizeEntityName(eq.client||''));
+      if(hitC){
+        document.getElementById('mcClient').value=hitC.nome;
+        const mapC={mcBranch:'branch',mcCnpj:'cnpj',mcContact:'contact',mcPhone:'phone',mcEmail:'email',mcCity:'city',mcDriveLink:'driveLink'};
+        Object.entries(mapC).forEach(([elId,prop])=>{
+          const el=document.getElementById(elId);
+          if(el&&!el.value.trim()&&hitC[prop])el.value=hitC[prop];
+        });
+      }
+    }
     document.getElementById('mcYear').value=eq.year||'';
     document.getElementById('mcHour').value=eq.hourTotal||'';
     document.getElementById('mcHpw').value=eq.hpw||'';
@@ -3257,7 +3282,12 @@ function openModalMachine(id=null){
 }
 
 function saveMachine(){
-  const client=document.getElementById('mcClient').value.trim();
+  let client=document.getElementById('mcClient').value.trim();
+  // Normalizar para o nome canônico do cliente cadastrado, se existir
+  if(client && db.clients){
+    const hitC=db.clients.find(c=>normalizeEntityName(c.nome)===normalizeEntityName(client));
+    if(hitC) client=hitC.nome;
+  }
   const brand=document.getElementById('mcBrand').value.trim();
   const model=document.getElementById('mcModel').value.trim();
   if(!client||!brand||!model){toast('Informe cliente, marca e modelo','error');return}
