@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ProperCare Manager · Gestão PGP v3.8</title>
+<title>ProperCare Manager · Gestão PGP v3.11</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
@@ -467,7 +467,7 @@ tr:hover td{background:var(--gray-50)}
       <div class="login-logo-mark">PC</div>
       <div class="login-logo-text">Proper Compressores</div>
     </div>
-    <div class="login-sub">ProperCare Manager · v3.8 — Acesso restrito</div>
+    <div class="login-sub">ProperCare Manager · v3.11 — Acesso restrito</div>
     <label class="login-label">Senha de acesso</label>
     <input class="login-input" type="password" id="loginInput" placeholder="••••••"
            maxlength="20" onkeydown="if(event.key==='Enter')loginEntrar()">
@@ -481,7 +481,7 @@ tr:hover td{background:var(--gray-50)}
     <div class="logo-mark">PC</div>
     <div class="logo-text">Proper Compressores</div>
     <div class="logo-sep"></div>
-    <div class="logo-sub">PCM v3.10</div>
+    <div class="logo-sub">PCM v3.11</div>
   </div>
   <nav class="header-nav">
     <button class="nav-btn active" onclick="showView('dashboard')" id="navDashboard">Dashboard</button>
@@ -1573,6 +1573,33 @@ function normalizeEntityName(v) {
     .replace(/\s+/g, ' ').trim();
 }
 
+// ── IDENTIDADE CANÔNICA v3.11 ─────────────────────────────────────────────
+function normalizeTextKey(v) {
+  return String(v || '')
+    .trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function clientKey(v) {
+  return normalizeTextKey(v)
+    .replace(/\b(ltda|s\.?a\.?|eireli|me|epp|ss|lda|inc|llc|do brasil|do norte|do sul|e cia|cia)\b/g, '')
+    .replace(/\s+/g, ' ').trim();
+}
+function compactKey(v) {
+  return normalizeTextKey(v).replace(/[^a-z0-9]/g, '');
+}
+function isSuspectClientTerm(v) {
+  const s = String(v || '').trim();
+  if (!s || s.length < 2) return true;
+  if (/^[\d\s\-\/]+$/.test(s)) return true;
+  if (/^[a-z]{0,2}\d/i.test(s) && s.length < 6) return true;
+  if (normalizeTextKey(s).replace(/[^a-z]/g, '').length < 2) return true;
+  return false;
+}
+// ──────────────────────────────────────────────────────────────────────────
+
 // ── MACHINE KEY — mesmo algoritmo do campo ────────────────────────────────
 function machineKey(client, brand, model, serial){
   const norm = v => String(v||'').trim().toLowerCase()
@@ -1595,11 +1622,17 @@ function findMachineByKey(mkId, client, brand, model, serial, tag){
   const mk = machineKey(client, brand, model, serial);
   const byMk = db.machines.find(m => String(m.id||'').trim() === mk);
   if(byMk) return byMk;
-  const nc=normalizeEntityName(client);
+  // 3. v3.11: usar clientKey para match robusto (grafia variante)
+  const ck = clientKey(client);
   const ser = normKey(serial);
-  if(ser && nc){ const bySer = db.machines.find(m => normalizeEntityName(m.client)===nc && normKey(m.serial)===ser); if(bySer) return bySer; }
+  if(ser && ck){ const bySer = db.machines.find(m => clientKey(m.client||'')===ck && normKey(m.serial)===ser); if(bySer) return bySer; }
   const tg = normKey(tag);
-  if(tg && nc){ const byTag = db.machines.find(m => normalizeEntityName(m.client)===nc && normKey(m.tag)===tg); if(byTag) return byTag; }
+  if(tg && ck){ const byTag = db.machines.find(m => clientKey(m.client||'')===ck && normKey(m.tag)===tg); if(byTag) return byTag; }
+  // 4. v3.11: fallback por série única (independente de cliente)
+  if(ser){
+    const bySerial = db.machines.filter(m => normKey(m.serial||'')===ser);
+    if(bySerial.length === 1) return bySerial[0];
+  }
   return null;
 }
 // ─────────────────────────────────────────────────────────────────────────
@@ -1880,8 +1913,9 @@ function checkClientDuplicates(val) {
 
 function mergeAllDuplicateClients() {
   const grupos = {};
+  // v3.11: agrupar por clientKey (inclui strip de sufixos jurídicos)
   db.clients.forEach(c => {
-    const k = normalizeEntityName(c.nome);
+    const k = clientKey(c.nome);
     if (!k) return;
     if (!grupos[k]) grupos[k] = [];
     grupos[k].push(c);
@@ -1903,12 +1937,14 @@ function mergeAllDuplicateClients() {
       if (!canon.observacoes && dup.observacoes) canon.observacoes = dup.observacoes;
       db.machines.forEach(m => {
         if (m.clientId === dup.id) m.clientId = canon.id;
-        if (normalizeEntityName(m.client) === normalizeEntityName(dup.nome)) m.client = canon.nome;
+        // v3.11: usar clientKey para normalizar máquinas com grafia variante
+        if (clientKey(m.client) === clientKey(dup.nome)) m.client = canon.nome;
       });
       total++;
     });
-    const normCanon = normalizeEntityName(canon.nome);
-    db.clients = db.clients.filter(c => c.id === canon.id || normalizeEntityName(c.nome) !== normCanon);
+    // v3.11: filtrar por clientKey
+    const normCanon = clientKey(canon.nome);
+    db.clients = db.clients.filter(c => c.id === canon.id || clientKey(c.nome) !== normCanon);
     canon.updatedAt = new Date().toISOString();
     syncToGS('saveClient', { client: canon });
   });
@@ -4048,7 +4084,8 @@ function renderMachines(){
   // Filtrar máquinas
   let machines=db.machines.filter(eq=>{
     const matchSearch=!search||(eq.client+eq.model+eq.brand+eq.serial+eq.tag).toLowerCase().includes(search.toLowerCase());
-    const matchClient=!_machFilter||eq.client===_machFilter;
+    // v3.11: usar clientKey para match robusto (evita divergência de contagem vs renderClients)
+    const matchClient=!_machFilter||clientKey(eq.client)===clientKey(_machFilter);
     const matchModel=!_machModelFilter||modelKey(eq.brand,eq.model)===_machModelFilter;
     return matchSearch&&matchClient&&matchModel;
   });
@@ -4232,10 +4269,10 @@ function renderClients(){
   const el=document.getElementById('clientsBody');
   if(!db.clients) db.clients=[];
 
-  // Enriquecer clientes com dados das máquinas
+  // v3.11: agrupar por clientKey para contagem e filtro consistentes com renderMachines
   const machinesByClient={};
   db.machines.forEach(eq=>{
-    const k=(eq.client||'').toLowerCase().trim();
+    const k=clientKey(eq.client||'');
     if(k){if(!machinesByClient[k])machinesByClient[k]=[];machinesByClient[k].push(eq);}
   });
 
@@ -4266,11 +4303,11 @@ function renderClients(){
     return _clientSortDir==='asc'?va.localeCompare(vb):vb.localeCompare(va);
   });
 
-  // Clientes sem cadastro completo
-  const registeredNames=new Set(db.clients.map(c=>c.nome.toLowerCase().trim()));
+  // v3.11: usar clientKey para detectar clientes sem cadastro
+  const registeredKeys=new Set(db.clients.map(c=>clientKey(c.nome||'')));
   const unregistered=[];
   Object.entries(machinesByClient).forEach(([k,eqs])=>{
-    if(!registeredNames.has(k)) unregistered.push({nome:eqs[0].client,eqs});
+    if(!registeredKeys.has(k)) unregistered.push({nome:eqs[0].client,eqs});
   });
 
   // Stats
@@ -4315,7 +4352,7 @@ function renderClients(){
           <th></th>
         </tr></thead>
         <tbody>${registered.map(c=>{
-          const eqs=machinesByClient[(c.nome||'').toLowerCase().trim()]||[];
+          const eqs=machinesByClient[clientKey(c.nome||'')]||[];
           const nVenc=eqs.filter(eq=>{const ws=getMachineWorstStatus(eq);return ws?.level==='vencido';}).length;
           const nAlert=eqs.filter(eq=>{const ws=getMachineWorstStatus(eq);return ws?.level==='alerta';}).length;
           let statusDot='';
@@ -4783,9 +4820,10 @@ async function syncFromGS({ silent = false } = {}){
       const scId   = String(sc.ID   || sc.id   || '').trim();
       const scNome = String(sc.Nome || sc.nome || '').trim();
       if (!scId && !scNome) return;
+      // v3.11: usar clientKey para match robusto de clientes
       const existing = db.clients.find(c =>
         (scId && c.id === scId) ||
-        (scNome && normalizeEntityName(c.nome) === normalizeEntityName(scNome))
+        (scNome && clientKey(c.nome) === clientKey(scNome))
       );
       if (existing) {
         if (!existing.cnpj     && sc.CNPJ)     existing.cnpj     = sc.CNPJ;
